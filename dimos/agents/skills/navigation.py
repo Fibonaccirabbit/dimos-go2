@@ -56,9 +56,9 @@ class NavigationSkillContainer(Module):
         self._skill_started = False
 
         # Here to prevent unwanted imports in the file.
-        from dimos.models.vl.qwen import QwenVlModel
+        from dimos.models.vl.create import create
 
-        self._vl_model = QwenVlModel()
+        self._vl_model = create(self.config.g.detection_model)
 
     @rpc
     def start(self) -> None:
@@ -69,6 +69,7 @@ class NavigationSkillContainer(Module):
 
     @rpc
     def stop(self) -> None:
+        self._vl_model.stop()
         super().stop()
 
     def _on_color_image(self, image: Image) -> None:
@@ -169,7 +170,8 @@ class NavigationSkillContainer(Module):
         logger.info(
             f"Navigating to pose: ({pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f})"
         )
-        self._navigation.set_goal(pose)
+        if not self._navigation.set_goal(pose):
+            return f"{message} Navigation rejected the goal; movement was not started."
 
         return (
             f"{message}. Started navigating to that position. "
@@ -251,6 +253,25 @@ class NavigationSkillContainer(Module):
         return self._navigate_to(goal_pose, message)
 
     @skill
+    def navigation_status(self) -> dict[str, Any]:
+        """Read navigation state and odometry before claiming arrival.
+
+        An idle state alone does not mean arrival: the goal may have been cancelled.
+        """
+        if not self._skill_started:
+            raise ValueError(f"{self} has not been started.")
+
+        return {
+            "state": self._navigation.get_state().value,
+            "goal_reached": self._navigation.is_goal_reached(),
+            "position": (
+                {"x": self._latest_odom.x, "y": self._latest_odom.y, "z": self._latest_odom.z}
+                if self._latest_odom is not None
+                else None
+            ),
+        }
+
+    @skill
     def stop_navigation(self) -> str:
         """Immediatly stop moving."""
 
@@ -265,7 +286,8 @@ class NavigationSkillContainer(Module):
         self._navigation.cancel_goal()
 
     def _get_goal_pose_from_result(self, result: dict[str, Any]) -> PoseStamped | None:
-        similarity = 1.0 - (result.get("distance") or 1)
+        distance = result.get("distance")
+        similarity = 1.0 - distance if distance is not None else 0.0
         if similarity < self._similarity_threshold:
             logger.warning(
                 f"Match found but similarity score ({similarity:.4f}) is below threshold ({self._similarity_threshold})"

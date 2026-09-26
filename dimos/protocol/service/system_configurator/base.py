@@ -77,6 +77,13 @@ class SystemConfigurator(ABC):
 
 
 def configure_system(checks: list[SystemConfigurator], check_only: bool = False) -> None:
+    # Local macOS DimSim can use conservative LCM fragmentation instead of
+    # changing machine-wide UDP buffer limits.  Keep this explicit and scoped
+    # to the launcher rather than pretending the process is running under pytest.
+    if os.environ.get("DIMOS_SKIP_SYSTEM_CONFIG") == "1":
+        logger.info("DIMOS_SKIP_SYSTEM_CONFIG=1: skipping system configuration.")
+        return
+
     # Skip in test runs — we'd otherwise prompt for sudo from a non-
     # interactive subprocess and kill the worker. The self-hosted CI
     # runner has its host config baked in via the container image, so

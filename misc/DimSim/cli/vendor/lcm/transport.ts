@@ -56,7 +56,9 @@ export function encodeFragmentedMessage(
   channel: string,
   data: Uint8Array,
   sequenceNumber: number,
-  maxFragmentSize: number = 65000
+  // macOS defaults net.inet.udp.maxdgram to 9216 bytes. Keep each LCM
+  // fragment below that ceiling so PointCloud2 works without a sysctl change.
+  maxFragmentSize: number = MAX_SMALL_MESSAGE
 ): Uint8Array[] {
   const channelBytes = textEncoder.encode(channel);
   const payloadSize = data.length;

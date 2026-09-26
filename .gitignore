@@ -63,6 +63,9 @@ data/*
 !data/.lfs/
 
 # Runtime output
+/artifacts/
+.env.*
+!.env.example
 /logs
 /recordings
 /downloads

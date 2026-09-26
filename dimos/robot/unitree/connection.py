@@ -105,12 +105,14 @@ class UnitreeWebRTCConnection(Resource):
         mode: str = "ai",
         aes_128_key: str | None = None,
         velocity_api: bool = False,
+        read_only: bool = False,
     ) -> None:
         self.ip = ip
         self.mode = mode
         self.stop_timer: threading.Timer | None = None
         self.cmd_vel_timeout = 0.2
         self._velocity_api = velocity_api
+        self._read_only = read_only
         self._move_ids = SequentialIds()
         # Per-device AES-128 key for new Unitree firmware (data2=3 handshake); omitted when unset.
         self.conn = LegionConnection(
@@ -127,9 +129,10 @@ class UnitreeWebRTCConnection(Resource):
 
             self.conn.datachannel.set_decoder(decoder_type="native")
 
-            await self.conn.datachannel.pub_sub.publish_request_new(
-                RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1002, "parameter": {"name": self.mode}}
-            )
+            if not self._read_only:
+                await self.conn.datachannel.pub_sub.publish_request_new(
+                    RTC_TOPIC["MOTION_SWITCHER"], {"api_id": 1002, "parameter": {"name": self.mode}}
+                )
 
         def start_background_loop() -> None:
             asyncio.set_event_loop(self.loop)
@@ -163,21 +166,22 @@ class UnitreeWebRTCConnection(Resource):
             self.stop_timer = None
 
         async def async_disconnect() -> None:
-            try:
+            if not self._read_only:
                 self._publish_movement(0, 0, 0)
-                await self.conn.disconnect()
-            except Exception:
-                pass
+            await self.conn.disconnect()
 
         if self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(async_disconnect(), self.loop)
-
-            self.loop.call_soon_threadsafe(self.loop.stop)
+            try:
+                asyncio.run_coroutine_threadsafe(async_disconnect(), self.loop).result(timeout=5.0)
+            finally:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+                self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
 
         if self.thread.is_alive():
             self.thread.join(timeout=DEFAULT_THREAD_JOIN_TIMEOUT)
 
     def _publish_movement(self, x: float, y: float, yaw: float) -> None:
+        self._require_control()
         if self._velocity_api:
             self.conn.datachannel.pub_sub.publish_without_callback(
                 RTC_TOPIC["SPORT_MOD"],
@@ -209,6 +213,7 @@ class UnitreeWebRTCConnection(Resource):
         Returns:
             bool: True if command was sent successfully
         """
+        self._require_control()
         x, y, yaw = twist.linear.x, twist.linear.y, twist.angular.z
 
         async def async_move() -> None:
@@ -273,10 +278,15 @@ class UnitreeWebRTCConnection(Resource):
 
     # Generic sync API call (we jump into the client thread)
     def publish_request(self, topic: str, data: dict[Any, Any]) -> Any:
+        self._require_control()
         future = asyncio.run_coroutine_threadsafe(
             self.conn.datachannel.pub_sub.publish_request_new(topic, data), self.loop
         )
         return future.result()
+
+    def _require_control(self) -> None:
+        if self._read_only:
+            raise PermissionError("Go2 sensor-only connection: robot control is disabled")
 
     @simple_mcache
     def raw_lidar_stream(self) -> Observable[RawLidarMsg]:
@@ -499,6 +509,8 @@ class UnitreeWebRTCConnection(Resource):
 
     def stop_movement(self) -> None:
         """Halt the base: publish a zero twist and cancel the auto-stop timer."""
+        if self._read_only:
+            return
         if self.stop_timer:
             self.stop_timer.cancel()
             self.stop_timer = None

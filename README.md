@@ -1,3 +1,11 @@
+# dimOS Go2 macOS 二开仓
+
+本仓库是 [dimensionalOS/dimos](https://github.com/dimensionalOS/dimos) 的公开 Fork，新增 macOS + Go2 / DeepSeek 适配。完整操作和验收边界见 [Go2 macOS 使用说明](README.go2-macos.md)。
+
+仿真已验证视觉问答、点云建图、原生导航和空间记忆回访；Go2 EDU 真机只验证只读感知、建图和路径预览，**尚未完成真机闭环导航/VLN，默认禁止运动**。上游介绍保留如下，不代表这些功能已全部在本二开配置验收。
+
+---
+
 <div align="center">
 
 <img width="1000" alt="banner_bordered_trimmed" src="https://github.com/user-attachments/assets/64f13b39-da06-4f58-add0-cfc44f04db4e" />

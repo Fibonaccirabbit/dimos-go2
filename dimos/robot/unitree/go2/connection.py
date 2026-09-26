@@ -69,6 +69,7 @@ class ConnectionConfig(ModuleConfig):
     lidar: bool = True
     camera: bool = True
     velocity_api: bool = False
+    read_only: bool = False
     # "mcf" for stair traversal, "normal" for basic, None to leave it as is
     motion_mode: str | None = None
     # Per-device AES-128 key (Go2 fw >=1.1.15); defaults from GlobalConfig.
@@ -140,6 +141,7 @@ def make_connection(
     cfg: GlobalConfig,
     aes_128_key: str | None = None,
     velocity_api: bool = False,
+    read_only: bool = False,
 ) -> Go2ConnectionProtocol:
     connection_type = cfg.unitree_connection_type.lower()
 
@@ -159,6 +161,7 @@ def make_connection(
             ip,
             aes_128_key=aes_128_key,
             velocity_api=velocity_api,
+            read_only=read_only,
         )
     else:
         raise ValueError(f"Unknown simulator {cfg.simulation!r}. Choose from: mujoco, dimsim")
@@ -375,6 +378,7 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.config.g,
             aes_128_key=self.config.aes_128_key,
             velocity_api=self.config.velocity_api,
+            read_only=self.config.read_only,
         )
 
         if hasattr(self.connection, "camera_info_static"):
@@ -402,7 +406,8 @@ class GO2Connection(Module, Camera, Pointcloud):
             self.register_disposable(self.connection.lidar_stream().subscribe(self.lidar.publish))
         self.register_disposable(self.connection.odom_stream().subscribe(self._publish_tf))
         self.register_disposable(self.connection.lowstate_stream().subscribe(self._on_lowstate))
-        self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
+        if not self.config.read_only:
+            self.register_disposable(Disposable(self.cmd_vel.subscribe(self.move)))
 
         if self.config.camera:
             self.register_disposable(self.connection.video_stream().subscribe(onimage))
@@ -416,6 +421,10 @@ class GO2Connection(Module, Camera, Pointcloud):
             # Every stream this module will subscribe is wired; a finished
             # replay may now shut the run down (--replay-exit).
             self.connection.seal_subscriptions()
+
+        if self.config.read_only:
+            logger.info("Go2 sensor-only mode: startup motion and command input disabled")
+            return
 
         if self.config.motion_mode and isinstance(self.connection, UnitreeWebRTCConnection):
             self.connection.set_motion_mode(self.config.motion_mode)
@@ -435,7 +444,8 @@ class GO2Connection(Module, Camera, Pointcloud):
     def stop(self) -> None:
         # Best-effort steps: teardown must always reach the WebRTC disconnect.
         try:
-            self.liedown()
+            if not self.config.read_only:
+                self.liedown()
         except Exception:
             logger.warning("liedown on stop failed (link already down?) — continuing teardown")
 

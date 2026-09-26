@@ -252,6 +252,28 @@ def test_on_system_modules_uses_responses_api_model(
     assert model.reasoning == {"effort": "medium", "summary": "auto"}
 
 
+def test_on_system_modules_uses_openai_compatible_endpoint(
+    configured_mcp_client: McpClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenAI-compatible providers can supply an endpoint and a named key env var."""
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setenv("TEST_MODEL_API_KEY", "test-key")
+    configured_mcp_client.config.model = "deepseek-flash"
+    configured_mcp_client.config.model_base_url = "https://api.deepseek.com"
+    configured_mcp_client.config.model_api_key_env = "TEST_MODEL_API_KEY"
+    configured_mcp_client.config.model_use_responses_api = True
+
+    with patch("langchain.agents.create_agent") as create_agent:
+        configured_mcp_client.on_system_modules([])
+
+    model = create_agent.call_args.kwargs["model"]
+    assert isinstance(model, ChatOpenAI)
+    assert model.model_name == "deepseek-flash"
+    assert model.openai_api_base == "https://api.deepseek.com"
+    assert model.use_responses_api is True
+
+
 @pytest.mark.parametrize("model_name", ["gpt-4o", "ollama:qwen3:8b", "huggingface:Qwen/Qwen3-8B"])
 def test_on_system_modules_resolves_non_reasoning_models(
     configured_mcp_client: McpClient, model_name: str

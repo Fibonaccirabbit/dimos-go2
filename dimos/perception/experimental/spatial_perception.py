@@ -54,7 +54,9 @@ class SpatialConfig(ModuleConfig):
     collection_name: str = "spatial_memory"
     embedding_model: str = "clip"
     embedding_dimensions: int = 512
+    embedding_providers: tuple[str, ...] | None = None
     min_distance_threshold: float = 0.01  # Min distance in meters to store a new frame
+    min_rotation_threshold: float | None = None  # Optional yaw change in radians
     min_time_threshold: float = 1.0  # Min time in seconds to record a new frame
     db_path: str | None = str(_DB_PATH)  # Path for ChromaDB persistence
     visual_memory_path: str | None = str(
@@ -152,7 +154,9 @@ class SpatialMemory(Module):
                     self._visual_memory = VisualMemory(output_dir=self.config.output_dir)
 
         self.embedding_provider = ImageEmbeddingProvider(
-            model_name=self.embedding_model, dimensions=self.embedding_dimensions
+            model_name=self.embedding_model,
+            dimensions=self.embedding_dimensions,
+            providers=self.config.embedding_providers,
         )
 
         self.vector_db: SpatialVectorDB = SpatialVectorDB(
@@ -163,6 +167,7 @@ class SpatialMemory(Module):
         )
 
         self.last_position: Vector3 | None = None
+        self.last_yaw: float | None = None
         self.last_record_time: float | None = None
 
         self.frame_count: int = 0
@@ -200,13 +205,10 @@ class SpatialMemory(Module):
 
     @rpc
     def stop(self) -> None:
-        # Save data before shutdown
-        self.save()
-
-        if self._visual_memory:
-            self._visual_memory.clear()
-
         super().stop()
+        # Stop sampling before saving. Repeated teardown must not overwrite images
+        # with an empty archive after the first stop.
+        self.save()
 
     def _process_frame(self) -> None:
         """Process the latest frame with pose data if available."""
@@ -220,6 +222,7 @@ class SpatialMemory(Module):
 
         # Create Pose object with position and orientation
         current_pose = tf.to_pose()
+        euler = tf.rotation.to_euler()
 
         # Process the frame directly
         try:
@@ -234,7 +237,11 @@ class SpatialMemory(Module):
                         current_pose.position.z - self.last_position.z,
                     ]
                 )
-                if distance_moved < self.min_distance_threshold:
+                yaw_changed = False
+                if self.config.min_rotation_threshold is not None and self.last_yaw is not None:
+                    yaw_delta = abs((euler.z - self.last_yaw + np.pi) % (2 * np.pi) - np.pi)
+                    yaw_changed = yaw_delta >= self.config.min_rotation_threshold
+                if distance_moved < self.min_distance_threshold and not yaw_changed:
                     return
 
             # Check time constraint
@@ -250,7 +257,6 @@ class SpatialMemory(Module):
 
             frame_id = f"frame_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             # Get euler angles from quaternion orientation for metadata
-            euler = tf.rotation.to_euler()
 
             # Create metadata dictionary with primitive types only
             metadata = {
@@ -274,6 +280,7 @@ class SpatialMemory(Module):
 
             # Update tracking variables
             self.last_position = current_pose.position
+            self.last_yaw = float(euler.z)
             self.last_record_time = current_time
             self.stored_frame_count += 1
 
@@ -432,7 +439,14 @@ class SpatialMemory(Module):
             List of results, each containing the image, its metadata, and similarity score
         """
         logger.info(f"Querying spatial memory with text: '{text}'")
-        return self.vector_db.query_by_text(text, limit)
+        results = self.vector_db.query_by_text(text, limit)
+        # Old interrupted runs may leave vectors without their image archive.
+        # Keep those records on disk, but do not navigate to an unreviewable match.
+        return [
+            result
+            for result in results
+            if self._visual_memory is not None and self._visual_memory.contains(result["id"])
+        ]
 
     @rpc
     def add_robot_location(self, location: RobotLocation) -> bool:

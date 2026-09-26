@@ -19,6 +19,10 @@ from dimos.models.vl.types import VlModelName
 def create(name: VlModelName) -> VlModel:
     # This uses inline imports to only import what's needed.
     match name:
+        case "deepseek":
+            from dimos.models.vl.deepseek import DeepSeekVlModel
+
+            return DeepSeekVlModel()
         case "qwen":
             from dimos.models.vl.qwen import QwenVlModel
 

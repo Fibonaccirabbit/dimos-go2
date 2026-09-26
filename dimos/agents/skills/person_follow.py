@@ -73,7 +73,7 @@ class PersonFollowSkillContainer(Module):
         super().__init__(**kwargs)
         self._latest_image: Image | None = None
         self._latest_pointcloud: PointCloud2 | None = None
-        self._vl_model: VlModel = create("qwen")
+        self._vl_model: VlModel = create(self.config.g.detection_model)
         self._tracker: EdgeTAMProcessor | None = None
         self._thread: Thread | None = None
         self._should_stop: Event = Event()

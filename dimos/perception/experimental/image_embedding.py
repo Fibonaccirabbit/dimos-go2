@@ -44,7 +44,12 @@ class ImageEmbeddingProvider:
     that can be stored in a vector database and used for similarity search.
     """
 
-    def __init__(self, model_name: str = "clip", dimensions: int = 512) -> None:
+    def __init__(
+        self,
+        model_name: str = "clip",
+        dimensions: int = 512,
+        providers: tuple[str, ...] | None = None,
+    ) -> None:
         """
         Initialize the image embedding provider.
 
@@ -54,6 +59,7 @@ class ImageEmbeddingProvider:
         """
         self.model_name = model_name
         self.dimensions = dimensions
+        self._providers = providers
         self.model: ort.InferenceSession | PreTrainedModel | None = None
         self.processor: ProcessorMixin | None = None
         self.model_path: str | None = None
@@ -74,7 +80,6 @@ class ImageEmbeddingProvider:
             if self.model_name == "clip":
                 model_id = get_data("models_clip") / "model.onnx"
                 self.model_path = str(model_id)  # type: ignore[assignment]  # Store for pickling
-                processor_id = "openai/clip-vit-base-patch32"
 
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
                 if sys.platform == "darwin":
@@ -84,9 +89,14 @@ class ImageEmbeddingProvider:
                         each for each in providers if each != "CUDAExecutionProvider"
                     ]
 
+                if self._providers is not None:
+                    providers = list(self._providers)
                 self.model = ort.InferenceSession(str(model_id), providers=providers)
 
-                self.processor = CLIPProcessor.from_pretrained(processor_id)
+                # The archive includes the matching tokenizer and image processor.
+                self.processor = CLIPProcessor.from_pretrained(
+                    str(model_id.parent), local_files_only=True
+                )
             elif self.model_name == "resnet":
                 model_id = "microsoft/resnet-50"  # type: ignore[assignment]
                 self.model = AutoModel.from_pretrained(model_id)
@@ -114,8 +124,7 @@ class ImageEmbeddingProvider:
             A numpy array containing the embedding vector
         """
         if self.model is None or self.processor is None:
-            logger.error("Model not initialized. Using fallback random embedding.")
-            return np.random.randn(self.dimensions).astype(np.float32)
+            raise RuntimeError("Image embedding model is not initialized")
 
         pil_image = self._prepare_image(image)
 
@@ -165,17 +174,15 @@ class ImageEmbeddingProvider:
                 # Get the [CLS] token embedding
                 embedding = outputs.last_hidden_state[:, 0, :].numpy()[0]
             else:
-                logger.warning(f"Unsupported model: {self.model_name}. Using random embedding.")
-                embedding = np.random.randn(self.dimensions).astype(np.float32)
+                raise ValueError(f"Unsupported embedding model {self.model_name}")
 
             # Normalize and ensure correct dimensions
             embedding = embedding / np.linalg.norm(embedding)
 
             return embedding
 
-        except Exception as e:
-            logger.error(f"Error generating embedding: {e}")
-            return np.random.randn(self.dimensions).astype(np.float32)
+        except (ValueError, TypeError, RuntimeError) as e:
+            raise RuntimeError("Image embedding generation failed") from e
 
     def get_text_embedding(self, text: str) -> np.ndarray:
         """
@@ -188,14 +195,10 @@ class ImageEmbeddingProvider:
             A numpy array containing the embedding vector
         """
         if self.model is None or self.processor is None:
-            logger.error("Model not initialized. Using fallback random embedding.")
-            return np.random.randn(self.dimensions).astype(np.float32)
+            raise RuntimeError("Text embedding model is not initialized")
 
         if self.model_name != "clip":
-            logger.warning(
-                f"Text embeddings are only supported with CLIP model, not {self.model_name}. Using random embedding."
-            )
-            return np.random.randn(self.dimensions).astype(np.float32)
+            raise ValueError(f"Text embeddings require CLIP, got {self.model_name}")
 
         try:
             import torch
@@ -238,9 +241,8 @@ class ImageEmbeddingProvider:
 
             return text_embedding
 
-        except Exception as e:
-            logger.error(f"Error generating text embedding: {e}")
-            return np.random.randn(self.dimensions).astype(np.float32)
+        except (ValueError, TypeError, RuntimeError) as e:
+            raise RuntimeError("Text embedding generation failed") from e
 
     def _prepare_image(self, image: np.ndarray | str | bytes) -> Image.Image:
         """

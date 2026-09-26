@@ -124,34 +124,22 @@ class SpatialVectorDB:
 
     def _process_query_results(self, results) -> list[dict]:  # type: ignore[no-untyped-def, type-arg]
         """Process query results to include decoded images."""
-        if not results or not results["ids"]:
+        if not results or not results["ids"] or not results["ids"][0]:
             return []
 
         processed_results = []
 
-        for i, vector_id in enumerate(results["ids"]):
-            if isinstance(vector_id, list) and not vector_id:
-                continue
-
-            lookup_id = vector_id[0] if isinstance(vector_id, list) else vector_id
-
-            # Create the result dictionary with metadata regardless of image availability
+        # Chroma returns one outer row per query, with ranked matches inside it.
+        # These methods submit exactly one query; preserve each match's own metadata.
+        for i, vector_id in enumerate(results["ids"][0]):
             result = {
-                "metadata": results["metadatas"][i] if "metadatas" in results else {},
-                "id": lookup_id,
+                "metadata": [results["metadatas"][0][i]] if results.get("metadatas") else [],
+                "id": vector_id,
             }
 
             # Add distance if available
-            if "distances" in results:
-                result["distance"] = (
-                    results["distances"][i][0]
-                    if isinstance(results["distances"][i], list)
-                    else results["distances"][i]
-                )
-
-            # Get the image from visual memory
-            # image = self.visual_memory.get(lookup_id)
-            # result["image"] = image
+            if results.get("distances"):
+                result["distance"] = results["distances"][0][i]
 
             processed_results.append(result)
 
@@ -185,7 +173,9 @@ class SpatialVectorDB:
         )
 
         logger.info(
-            f"Text query: '{text}' returned {len(results['ids'] if 'ids' in results else [])} results"
+            "Spatial memory query",
+            query=text,
+            matches=len(results["ids"][0]) if results.get("ids") else 0,
         )
         return self._process_query_results(results)
 
@@ -214,6 +204,9 @@ class SpatialVectorDB:
         Returns:
             The best matching RobotLocation or None if no matches found
         """
+
+        if self.location_collection.count() == 0:
+            return None, 0.0
 
         results = self.location_collection.query(
             query_texts=[query], n_results=1, include=["metadatas", "documents", "distances"]

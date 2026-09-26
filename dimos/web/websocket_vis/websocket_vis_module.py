@@ -71,6 +71,7 @@ _browser_opened = False
 
 class WebsocketConfig(ModuleConfig):
     port: int = 7779
+    robot_pose_max_hz: float = 15.0
 
 
 class WebsocketVisModule(Module):
@@ -126,6 +127,7 @@ class WebsocketVisModule(Module):
         self.vis_state = {}  # type: ignore[var-annotated]
         self.state_lock = threading.Lock()
         self.costmap_encoder = OptimizedCostmapEncoder(chunk_size=64)
+        self._last_robot_pose_emit = 0.0
 
         # Track GPS goal points for visualization
         self.gps_goal_points: list[dict[str, float]] = []
@@ -365,6 +367,11 @@ class WebsocketVisModule(Module):
     def _on_robot_pose(self, msg: PoseStamped) -> None:
         pose_data = {"type": "vector", "c": [msg.position.x, msg.position.y, msg.position.z]}
         self.vis_state["robot_pose"] = pose_data
+        now = time.monotonic()
+        max_hz = self.config.robot_pose_max_hz
+        if max_hz > 0 and now - self._last_robot_pose_emit < 1.0 / max_hz:
+            return
+        self._last_robot_pose_emit = now
         self._emit("robot_pose", pose_data)
 
     def _on_gps_location(self, msg: LatLon) -> None:

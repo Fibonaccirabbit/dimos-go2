@@ -117,6 +117,9 @@ rerun_config: dict[str, Any] = {
         "world/navigation_costmap": _convert_navigation_costmap,
     },
     "max_hz": {
+        # Keep the browser smooth without changing the control-loop rates.
+        "world/odom": 15,
+        "world/tf": 15,
         "world/global_map": 0,  # publishes at ~7.8 Hz
         "world/color_image": 0,  # publishes at ~14 Hz
         "world/global_costmap": 0,  # publishes at ~7.6 Hz

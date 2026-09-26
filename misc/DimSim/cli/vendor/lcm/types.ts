@@ -57,6 +57,8 @@ export interface PacketSubscription {
 // LCM Protocol constants
 export const MAGIC_SHORT = 0x4c433032; // "LC02"
 export const MAGIC_LONG = 0x4c433033; // "LC03"
-export const MAX_SMALL_MESSAGE = 65535;
+// macOS defaults net.inet.udp.maxdgram to 9216. Fragment larger payloads
+// before sending instead of silently dropping camera JPEGs above that limit.
+export const MAX_SMALL_MESSAGE = 8192;
 export const SHORT_HEADER_SIZE = 8;
 export const FRAGMENT_HEADER_SIZE = 20;

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
@@ -52,7 +53,14 @@ logger = setup_logger()
 _RESPONSES_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
 
-def init_model(model_name: str, trace_dir: Path | None = None) -> Any:
+def init_model(
+    model_name: str,
+    trace_dir: Path | None = None,
+    *,
+    base_url: str | None = None,
+    api_key_env: str | None = None,
+    use_responses_api: bool | None = None,
+) -> Any:
     """Initialize a model while preserving LangChain provider resolution.
 
     With *trace_dir*, every request/response body goes to disk whole
@@ -65,6 +73,21 @@ def init_model(model_name: str, trace_dir: Path | None = None) -> Any:
     from langchain_openai import ChatOpenAI
 
     client = None if trace_dir is None else tracing_http_client(trace_dir)
+    if base_url is not None or api_key_env is not None or use_responses_api is not None:
+        kwargs: dict[str, Any] = {"model": model_name}
+        if base_url is not None:
+            kwargs["base_url"] = base_url
+        if api_key_env is not None:
+            api_key = os.environ.get(api_key_env)
+            if not api_key:
+                raise RuntimeError(f"Model API key environment variable {api_key_env!r} is not set")
+            kwargs["api_key"] = api_key
+        if use_responses_api is not None:
+            kwargs["use_responses_api"] = use_responses_api
+        if client is not None:
+            kwargs["http_client"] = client
+        return ChatOpenAI(**kwargs)
+
     if ":" in model_name or not model_name.startswith(_RESPONSES_REASONING_MODEL_PREFIXES):
         model = init_chat_model(model=model_name)
         if client is not None and isinstance(model, ChatOpenAI):
@@ -82,6 +105,10 @@ def init_model(model_name: str, trace_dir: Path | None = None) -> Any:
 class McpClientConfig(ModuleConfig):
     system_prompt: str | None = SYSTEM_PROMPT
     model: str = "gpt-5.6-luna"
+    model_base_url: str | None = None
+    model_api_key_env: str | None = None
+    model_use_responses_api: bool | None = None
+    excluded_tools: tuple[str, ...] = ()
     model_fixture: str | None = None
     mcp_server_url: str = "http://localhost:9990/mcp"
     trace_dir: Path | None = None
@@ -110,6 +137,7 @@ class McpClient(Module):
         self._lock = RLock()
         self._state_graph = None
         self._message_queue = Queue()
+        self._pending_tool_images: Queue[BaseMessage] = Queue()
         self._agent_tools = None
         self._tool_registry = {}
         self._history = []
@@ -178,7 +206,8 @@ class McpClient(Module):
                 f"Failed to fetch tools from MCP server {self.config.mcp_server_url}"
             )
 
-        raw_tools = result.get("tools", [])
+        excluded = set(self.config.excluded_tools)
+        raw_tools = [tool for tool in result.get("tools", []) if tool["name"] not in excluded]
         self._tool_registry = {t["name"]: t for t in raw_tools}
         tools = [self._mcp_tool_to_langchain(t) for t in raw_tools]
 
@@ -215,14 +244,16 @@ class McpClient(Module):
             parts = [c.get("text", "") for c in content if c.get("type") == "text"]
             text = "\n".join(parts)
 
-            # Images need to be added to the history separately because they
-            # cannot be included in the tool response for OpenAI models and
-            # probably others.
+            # Deliver images before the next model call so it can finish the
+            # visual request in the same agent turn.
             for item in content:
                 if item.get("type") != "text":
                     uuid_ = str(uuid.uuid4())
-                    text += f"Tool call started with UUID: {uuid_}. You will be updated with the result soon."
-                    _append_image_to_history(self, name, uuid_, item)
+                    text += (
+                        f"\nImage captured with UUID: {uuid_}. "
+                        "The accompanying image is available for this request."
+                    )
+                    _queue_tool_image(self, name, uuid_, item)
 
             return text
 
@@ -260,6 +291,17 @@ class McpClient(Module):
     def _rebuild_agent(self) -> None:
         # ~2s: pulls transformers+torch; deferred to keep module import light.
         from langchain.agents import create_agent
+        from langchain.agents.middleware import before_model
+
+        @before_model
+        def deliver_tool_images(_state: Any, _runtime: Any) -> dict[str, Any] | None:
+            messages: list[BaseMessage] = []
+            while True:
+                try:
+                    messages.append(self._pending_tool_images.get_nowait())
+                except Empty:
+                    break
+            return {"messages": messages} if messages else None
 
         # Under the lock, or a concurrent set_trace_dir can lose its path to this build.
         with self._lock:
@@ -268,11 +310,18 @@ class McpClient(Module):
 
                 model = MockModel(json_path=self.config.model_fixture)
             else:
-                model = init_model(self.config.model, trace_dir=self.config.trace_dir)
+                model = init_model(
+                    self.config.model,
+                    trace_dir=self.config.trace_dir,
+                    base_url=self.config.model_base_url,
+                    api_key_env=self.config.model_api_key_env,
+                    use_responses_api=self.config.model_use_responses_api,
+                )
             self._state_graph = create_agent(
                 model=model,
                 tools=self._agent_tools or [],
                 system_prompt=self.config.system_prompt,
+                middleware=[deliver_tool_images],
             )
 
     @rpc
@@ -387,6 +436,9 @@ class McpClient(Module):
 
         for update in state_graph.stream({"messages": self._history}, stream_mode="updates"):
             for node_output in update.values():
+                # Middleware may run without adding messages.
+                if node_output is None:
+                    continue
                 for msg in node_output.get("messages", []):
                     self._history.append(msg)
                     pretty_print_langchain_message(msg)
@@ -396,10 +448,8 @@ class McpClient(Module):
             self.agent_idle.publish(True)
 
 
-def _append_image_to_history(
-    mcp_client: McpClient, func_name: str, uuid_: str, result: Any
-) -> None:
-    mcp_client.add_message(
+def _queue_tool_image(mcp_client: McpClient, func_name: str, uuid_: str, result: Any) -> None:
+    mcp_client._pending_tool_images.put(
         HumanMessage(
             content=[
                 {
