@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SessionStatus } from "@dimos/sdk";
 import type { PageTab } from "../layout/PageView.tsx";
+import { RecordButton } from "./RecordButton.tsx";
 import styles from "./StatusBar.module.css";
 
 /** What the page shows below the header: the panel layout, or the raw channel table. */
@@ -106,6 +107,7 @@ export function StatusBar(
           </button>
         ))}
       </div>
+      <RecordButton robotName={status.watchedRobot?.name ?? null} />
       <span className={styles.pill} data-testid="status" data-phase={transport.phase}>
         {PHASE_LABEL[transport.phase]}
       </span>

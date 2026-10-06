@@ -185,6 +185,27 @@
   color: var(--fg);
 }
 
+.recording {
+  animation: rec-pulse 1.2s ease-in-out infinite;
+  background: none;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-s);
+  color: var(--danger);
+  cursor: pointer;
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
 .error {
   color: var(--danger);
   font-size: 11px;
