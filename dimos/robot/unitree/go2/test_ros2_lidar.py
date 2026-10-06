@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from dimos.robot.unitree.go2 import ros2_lidar
 from dimos.robot.unitree.go2.ros2_lidar import Go2Ros2Lidar, read_cloud_packet
 from dimos.robot.unitree.go2.ros2_lidar_reader import extract_xyz
 
@@ -75,6 +76,20 @@ def test_bridge_status_does_not_claim_data_before_start(bridge):
     assert status["motion_enabled"] is False
     assert status["frames"] == 0
     assert status["age_seconds"] is None
+
+
+def test_failed_preflight_does_not_start_module_or_reader(bridge, mocker):
+    preflight = mocker.patch.object(
+        ros2_lidar, "check_remote_environment", side_effect=RuntimeError("login required")
+    )
+    parent_start = mocker.patch.object(ros2_lidar.Module, "start")
+    reader = mocker.patch.object(ros2_lidar.subprocess, "Popen")
+    with pytest.raises(RuntimeError, match="login required"):
+        bridge.start()
+    preflight.assert_called_once_with(bridge.config)
+    parent_start.assert_not_called()
+    reader.assert_not_called()
+    assert bridge._process is None
 
 
 @pytest.mark.parametrize("endian", ["<", ">"])

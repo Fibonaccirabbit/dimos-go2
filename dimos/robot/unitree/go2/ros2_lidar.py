@@ -74,6 +74,54 @@ class Ros2LidarConfig(ModuleConfig):
     max_hz: float = Field(default=3.0, gt=0, le=15)
 
 
+def ssh_command(cfg: Ros2LidarConfig, command: str) -> list[str]:
+    """Use the operator's SSH authentication; never prompt or change host trust."""
+    return [
+        "ssh",
+        "-T",
+        "-S",
+        cfg.control_path,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "--",
+        f"{cfg.user}@{cfg.host}",
+        command,
+    ]
+
+
+def check_remote_environment(cfg: Ros2LidarConfig) -> None:
+    """Verify SSH and existing ROS imports, without creating nodes or writing files."""
+    script = (
+        f"set -e; source {shlex.quote(cfg.ros_setup)}; "
+        "python3 -c 'import numpy, rclpy; from sensor_msgs.msg import PointCloud2'"
+    )
+    try:
+        result = subprocess.run(
+            ssh_command(cfg, "bash -lc " + shlex.quote(script)),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Go2 SSH/ROS preflight could not complete; no reader started") from exc
+    if result.returncode:
+        raise RuntimeError(
+            "Go2 SSH/ROS preflight failed. Reconnect SSH after battery replacement and "
+            "verify ros_setup and the existing ROS dependencies. " + result.stderr.strip()[:500]
+        )
+
+
 class Go2Ros2Lidar(Module):
     config: Ros2LidarConfig
     lidar: Out[PointCloud2]
@@ -91,35 +139,19 @@ class Go2Ros2Lidar(Module):
 
     @rpc
     def start(self) -> None:
+        check_remote_environment(self.config)
         super().start()
         cfg = self.config
         reader = Path(__file__).with_name("ros2_lidar_reader.py").read_bytes()
         script = (
-            f"source {shlex.quote(cfg.ros_setup)}; "
+            f"set -e; source {shlex.quote(cfg.ros_setup)}; "
             "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp; "
             "export CYCLONEDDS_URI='<CycloneDDS><Domain><General><Interfaces>"
             '<NetworkInterface name="eth0" /></Interfaces></General></Domain></CycloneDDS>\'; '
             f"exec python3 -u - {shlex.quote(cfg.topic)} {shlex.quote(cfg.expected_frame)} {cfg.max_hz}"
         )
         self._process = subprocess.Popen(
-            [
-                "ssh",
-                "-T",
-                "-S",
-                cfg.control_path,
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "ConnectTimeout=5",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=2",
-                f"{cfg.user}@{cfg.host}",
-                "bash -lc " + shlex.quote(script),
-            ],
+            ssh_command(cfg, "bash -lc " + shlex.quote(script)),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

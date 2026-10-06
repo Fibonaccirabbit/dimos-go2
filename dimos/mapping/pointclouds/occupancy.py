@@ -265,9 +265,11 @@ def height_cost_occupancy(cloud: PointCloud2, **kwargs: Any) -> OccupancyGrid:
         cost_float = (height_change_per_cell / cfg.can_climb) * 100.0
         cost_float = np.clip(cost_float, 0, 100)
 
-        # Erode observed mask - only trust gradients where all neighbors are observed
-        # This prevents false high costs at boundaries with unknown regions
-        structure = ndimage.generate_binary_structure(2, 1)  # 4-connectivity
+        # Sobel uses all nine cells, including diagonals. A 4-connected mask
+        # lets unknown diagonal heights (filled with zero above) invent a slope
+        # that changes with the arbitrary world Z origin. Missing stencil data
+        # must remain unknown, never an obstacle estimate or an assumed floor.
+        structure = np.ones((3, 3), dtype=bool)
         valid_gradient_mask = ndimage.binary_erosion(observed_mask, structure=structure)
 
         # Convert to int8, marking cells without valid gradients as -1

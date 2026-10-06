@@ -10,6 +10,9 @@ export DIMOS_SKIP_SYSTEM_CONFIG=1
 # Keep local RPC and DeepSeek on the working direct path without changing
 # macOS or Clash settings; retain any caller-specified bypass entries.
 export NO_PROXY="127.0.0.1,localhost,api.deepseek.com${NO_PROXY:+,$NO_PROXY}"
+python -m dimos.robot.unitree.go2.demo_preflight \
+  --robot-ip "${1:-192.168.123.161}" \
+  --control-path "${DIMOS_GO2_SSH_CONTROL_PATH:-/private/tmp/dimos-go2-edu-readonly.sock}"
 export DEEPSEEK_API_KEY="$(security find-generic-password -s dimos-deepseek -w 2>/dev/null)"
 if [[ -z "$DEEPSEEK_API_KEY" ]]; then
   print -u2 "Missing macOS Keychain service 'dimos-deepseek'."

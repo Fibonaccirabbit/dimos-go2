@@ -77,9 +77,12 @@ SSH 只运行临时 ROS 2 订阅器取点云，建图、代价地图、Agent 和
 
 ```zsh
 ssh -M -S /private/tmp/dimos-go2-edu-readonly.sock \
-  -o ControlPersist=600 -o StrictHostKeyChecking=yes -fNT unitree@192.168.123.18
+  -o ControlPersist=600 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 \
+  -o StrictHostKeyChecking=yes -fNT unitree@192.168.123.18
 zsh scripts/go2-macos/run-go2-real-observe.sh 192.168.123.161
 ```
+
+启动脚本先检查 WebRTC TCP 端口和 SSH/ROS 导入，失败则退出，不读取 API 密钥、不启动新栈。可单独运行 `python -m dimos.robot.unitree.go2.demo_preflight --robot-ip 192.168.123.161` 排查；通过仅表示启动条件具备，不代表相机/点云已更新或路径安全。断线后旧 SSH 主连接需重建，传感器桥不会自动重连；重启观察服务以重新采集地图。
 
 默认只允许本地预览和传感器状态查询，prompt 禁止向模型发送真机画面。**该图像许可限制在 prompt 层，不是传输层隐私护栏**；不应把它当成强制访问控制。若现场人员/运营方已经明确同意画面上传，可使用第二个参数 `--allow-vision`。这个参数不开放运动。
 
@@ -91,6 +94,15 @@ zsh scripts/go2-macos/send-go2-command.sh '只预览从实际当前位置向前0
 ```
 
 本入口 `read_only=True`：不自动站立、不切换运动模式、不订阅速度命令、关闭时不趴下；连接层拒绝控制请求。规划预览不含 `cmd_vel` / `nav_cmd_vel`，没有 MovementManager 或探索控制。0.5 m footprint 为保守代理，未完成实际尺寸/足式动力学验证。
+
+先由操作员用官方遥控器站立停稳，再启动建图。若建图期间从趴姿站起，或定位原点变化，先保持停稳并重建整套只读地图；复用原生 CLI，不另加清除障碍的工具：
+
+```zsh
+dimos status  # 必须确认是 unitree-go2-observe-cockpit；不要盲目重启其他运动栈
+dimos restart
+```
+
+重启会丢弃本次进程中的累计地图、旧路径和规划状态，并重新获取传感器数据；不会删除持久文件，也不会消除当前帧的近场回波或修复里程计漂移。不要把图变稀疏或重新建图等同于起点安全、导航成功。
 
 换电/断网前停止观察服务、关闭 SSH 主连接。重启后必须重新取得新鲜里程计、重建地图，不复用旧 odom 坐标；只读模式不是急停，也不能阻止遥控器/机载程序自行运动。
 
